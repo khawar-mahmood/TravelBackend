@@ -16,13 +16,44 @@ const origins = (process.env.CLIENT_ORIGIN || 'http://localhost:5173')
   .map((o) => o.trim())
   .filter(Boolean)
 
-app.use(cors({ origin: origins.length ? origins : true }))
+const corsOptions = {
+  origin(origin, callback) {
+    // Allow requests with no Origin (curl, server-to-server, some tools)
+    if (!origin || origins.includes(origin)) {
+      callback(null, true)
+    } else {
+      callback(new Error(`CORS blocked for origin: ${origin}`))
+    }
+  },
+  methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  optionsSuccessStatus: 204,
+}
+
+// CORS must run first. Handle OPTIONS immediately (before DB) so preflight
+// never hits async middleware or gets redirected by downstream errors.
+app.use(cors(corsOptions))
+app.options('*', cors(corsOptions))
+
+app.use((req, res, next) => {
+  const origin = req.headers.origin
+  if (origin && origins.includes(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin)
+    res.setHeader('Vary', 'Origin')
+  }
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS')
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+  if (req.method === 'OPTIONS') {
+    return res.status(204).end()
+  }
+  next()
+})
+
 app.use(express.json())
 
-// Ensure the database is connected before handling API requests.
-// This makes the same app work both as a long-running server (local) and as a
-// serverless function (Vercel), where each cold start must (re)connect.
-app.use(async (_req, res, next) => {
+// Skip DB connect for OPTIONS (already handled above, but belt-and-braces)
+app.use(async (req, res, next) => {
+  if (req.method === 'OPTIONS') return next()
   try {
     await connectDB()
     next()
@@ -48,11 +79,20 @@ app.get('/api/health', (_req, res) => {
     ok: true,
     db: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
     time: new Date().toISOString(),
+    cors: origins,
   })
 })
 
 app.use('/api/auth', authRoutes)
 app.use('/api/inquiries', inquiryRoutes)
+
+// CORS error handler
+app.use((err, req, res, next) => {
+  if (err.message?.startsWith('CORS blocked')) {
+    return res.status(403).json({ error: err.message, allowedOrigins: origins })
+  }
+  next(err)
+})
 
 export default app
 export { origins }
