@@ -31,6 +31,18 @@ app.use(async (_req, res, next) => {
   }
 })
 
+app.get('/', (_req, res) => {
+  res.json({
+    name: 'Robin Holidays API',
+    status: 'running',
+    endpoints: {
+      health: '/api/health',
+      login: 'POST /api/auth/login',
+      inquiries: '/api/inquiries',
+    },
+  })
+})
+
 app.get('/api/health', (_req, res) => {
   res.json({
     ok: true,
