@@ -1,15 +1,22 @@
 import mongoose from 'mongoose'
 import dns from 'node:dns'
 
-// Some networks/ISPs/VPNs refuse the SRV DNS lookups that mongodb+srv:// needs
-// (error: querySrv ECONNREFUSED). Force a reliable public resolver so the Atlas
-// connection works regardless of the host's default DNS settings.
-try {
-  dns.setServers(
-    (process.env.DNS_SERVERS || '8.8.8.8,1.1.1.1').split(',').map((s) => s.trim()).filter(Boolean)
-  )
-} catch {
-  // ignore invalid DNS_SERVERS values; fall back to system resolver
+// Some home networks/ISPs/VPNs refuse the SRV DNS lookups that mongodb+srv://
+// needs (error: querySrv ECONNREFUSED), so we point Node at a public resolver.
+// On Vercel the platform resolver already works and overriding it can break
+// SRV lookups, so there we only override when DNS_SERVERS is set explicitly.
+const dnsDefault = process.env.VERCEL ? '' : '8.8.8.8,1.1.1.1'
+const dnsServers = (process.env.DNS_SERVERS || dnsDefault)
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean)
+
+if (dnsServers.length) {
+  try {
+    dns.setServers(dnsServers)
+  } catch {
+    // ignore invalid DNS_SERVERS values; fall back to system resolver
+  }
 }
 
 // Cache the connection across (serverless) invocations so we don't open a new

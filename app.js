@@ -11,18 +11,21 @@ const app = express()
 
 // Allowed frontend origins (CORS). Set CLIENT_ORIGIN as a comma-separated list
 // in production, e.g. "https://robinholidays.co.uk,https://www.robinholidays.co.uk"
-const origins = (process.env.CLIENT_ORIGIN || 'http://localhost:5173')
+const origins = (process.env.CLIENT_ORIGIN ||
+  'http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173')
   .split(',')
   .map((o) => o.trim())
   .filter(Boolean)
 
 const corsOptions = {
   origin(origin, callback) {
-    // Allow requests with no Origin (curl, server-to-server, some tools)
+    // Allow requests with no Origin (curl, server-to-server, some tools).
+    // Use false (not an Error) when blocked so the response still completes
+    // cleanly instead of looking like a broken preflight.
     if (!origin || origins.includes(origin)) {
       callback(null, true)
     } else {
-      callback(new Error(`CORS blocked for origin: ${origin}`))
+      callback(null, false)
     }
   },
   methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
@@ -51,16 +54,18 @@ app.use((req, res, next) => {
 
 app.use(express.json())
 
-// Skip DB connect for OPTIONS (already handled above, but belt-and-braces)
-app.use(async (req, res, next) => {
+// Applied only to the data routes, so `/` and `/api/health` still answer when
+// the database is unreachable — which is what tells you the database is the
+// thing that's broken.
+async function ensureDB(req, res, next) {
   if (req.method === 'OPTIONS') return next()
   try {
     await connectDB()
     next()
   } catch (err) {
-    res.status(500).json({ error: 'Database connection failed', detail: err.message })
+    res.status(503).json({ error: 'Database connection failed', detail: err.message })
   }
-})
+}
 
 app.get('/', (_req, res) => {
   res.json({
@@ -83,8 +88,8 @@ app.get('/api/health', (_req, res) => {
   })
 })
 
-app.use('/api/auth', authRoutes)
-app.use('/api/inquiries', inquiryRoutes)
+app.use('/api/auth', ensureDB, authRoutes)
+app.use('/api/inquiries', ensureDB, inquiryRoutes)
 
 // CORS error handler
 app.use((err, req, res, next) => {
