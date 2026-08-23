@@ -1,69 +1,89 @@
-import mongoose from 'mongoose'
-import dns from 'node:dns'
+import { cert, getApps, initializeApp } from 'firebase-admin/app'
+import { getFirestore } from 'firebase-admin/firestore'
 
-// Some home networks/ISPs/VPNs refuse the SRV DNS lookups that mongodb+srv://
-// needs (error: querySrv ECONNREFUSED), so we point Node at a public resolver.
-// On Vercel the platform resolver already works and overriding it can break
-// SRV lookups, so there we only override when DNS_SERVERS is set explicitly.
-const dnsDefault = process.env.VERCEL ? '' : '8.8.8.8,1.1.1.1'
-const dnsServers = (process.env.DNS_SERVERS || dnsDefault)
-  .split(',')
-  .map((s) => s.trim())
-  .filter(Boolean)
-
-if (dnsServers.length) {
-  try {
-    dns.setServers(dnsServers)
-  } catch {
-    // ignore invalid DNS_SERVERS values; fall back to system resolver
+// Cache across warm Vercel invocations so we don't re-init Firebase on every request.
+let cached = globalThis.__rhFirebase
+if (!cached) {
+  cached = globalThis.__rhFirebase = {
+    db: null,
+    memory: null,
+    mode: null,
+    promise: null,
   }
 }
 
-// Cache the connection across (serverless) invocations so we don't open a new
-// MongoDB connection on every request. On Vercel, modules are reused between
-// warm invocations, and `globalThis` survives, so we cache there.
-let cached = globalThis.__rhMongoose
-if (!cached) cached = globalThis.__rhMongoose = { conn: null, promise: null, mode: null }
+function parseServiceAccount() {
+  const rawJson = (process.env.FIREBASE_SERVICE_ACCOUNT || '').trim()
+  if (rawJson) {
+    const parsed = JSON.parse(rawJson)
+    if (typeof parsed.private_key === 'string') {
+      parsed.private_key = parsed.private_key.replace(/\\n/g, '\n')
+    }
+    return parsed
+  }
+
+  const projectId = (process.env.FIREBASE_PROJECT_ID || '').trim()
+  const clientEmail = (process.env.FIREBASE_CLIENT_EMAIL || '').trim()
+  const privateKey = (process.env.FIREBASE_PRIVATE_KEY || '').replace(/\\n/g, '\n')
+
+  if (projectId && clientEmail && privateKey) {
+    return { projectId, clientEmail, privateKey }
+  }
+
+  return null
+}
 
 /**
- * Connects to MongoDB (idempotent + cached).
- * - If MONGODB_URI is set, connects to it (Atlas/local) — required in production.
- * - If empty, falls back to an in-memory MongoDB for local dev only
- *   (requires the optional dev dependency: npm i -D mongodb-memory-server).
- * Returns: 'configured' | 'memory'
+ * Connects to Firestore (idempotent + cached).
+ * - If Firebase credentials are set, uses Firestore — required in production.
+ * - If empty, falls back to an in-memory store for local dev only.
+ * Returns: 'firestore' | 'memory'
  */
 export async function connectDB() {
-  if (cached.conn && mongoose.connection.readyState === 1) return cached.mode
+  if (cached.mode) return cached.mode
 
   if (!cached.promise) {
     cached.promise = (async () => {
-      const uri = (process.env.MONGODB_URI || '').trim()
+      const credentials = parseServiceAccount()
 
-      if (uri) {
-        await mongoose.connect(uri, {
-          serverSelectionTimeoutMS: 8000,
-          maxPoolSize: 10,
-        })
-        cached.mode = 'configured'
-        cached.conn = mongoose.connection
+      if (credentials) {
+        if (!getApps().length) {
+          initializeApp({ credential: cert(credentials) })
+        }
+        cached.db = getFirestore()
+        cached.mode = 'firestore'
         return cached.mode
       }
 
-      // Dev-only fallback. The variable import name prevents bundlers (Vercel/ncc)
-      // from trying to include this optional dev dependency in production builds.
-      const pkg = 'mongodb-memory-server'
-      const { MongoMemoryServer } = await import(pkg)
-      const mem = await MongoMemoryServer.create()
-      await mongoose.connect(mem.getUri())
+      if (process.env.VERCEL) {
+        throw new Error(
+          'Firebase credentials are required in production. Set FIREBASE_SERVICE_ACCOUNT, or FIREBASE_PROJECT_ID + FIREBASE_CLIENT_EMAIL + FIREBASE_PRIVATE_KEY.'
+        )
+      }
+
+      cached.memory = new Map()
       cached.mode = 'memory'
-      cached.conn = mongoose.connection
       return cached.mode
     })().catch((err) => {
-      cached.promise = null // allow retry on next request after a failure
+      cached.promise = null
       throw err
     })
   }
 
   await cached.promise
+  return cached.mode
+}
+
+export function getDb() {
+  if (!cached.db) throw new Error('Firestore is not connected.')
+  return cached.db
+}
+
+export function getMemory() {
+  if (!cached.memory) throw new Error('In-memory store is not available.')
+  return cached.memory
+}
+
+export function getMode() {
   return cached.mode
 }

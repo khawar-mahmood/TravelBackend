@@ -4,6 +4,24 @@ import { requireAuth } from '../middleware/auth.js'
 
 const router = Router()
 
+function countBy(rows, key) {
+  const counts = new Map()
+  for (const row of rows) {
+    const label = row[key] || ''
+    counts.set(label, (counts.get(label) || 0) + 1)
+  }
+  return [...counts.entries()]
+    .map(([label, count]) => ({ _id: label, count }))
+    .sort((a, b) => b.count - a.count)
+}
+
+function dayKey(value) {
+  if (!value) return null
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return null
+  return date.toISOString().slice(0, 10)
+}
+
 // PUBLIC: create a new inquiry (from website forms)
 router.post('/', async (req, res) => {
   try {
@@ -38,7 +56,7 @@ router.get('/', requireAuth, async (req, res) => {
   try {
     const { status } = req.query
     const filter = status && STATUSES.includes(status) ? { status } : {}
-    const inquiries = await Inquiry.find(filter).sort({ createdAt: -1 })
+    const inquiries = await Inquiry.find(filter)
     res.json({ inquiries })
   } catch (err) {
     res.status(500).json({ error: 'Could not load inquiries.', detail: err.message })
@@ -48,9 +66,11 @@ router.get('/', requireAuth, async (req, res) => {
 // COUNTS per status (for dashboard badges)
 router.get('/stats', requireAuth, async (_req, res) => {
   try {
-    const agg = await Inquiry.aggregate([{ $group: { _id: '$status', count: { $sum: 1 } } }])
+    const inquiries = await Inquiry.find()
     const stats = Object.fromEntries(STATUSES.map((s) => [s, 0]))
-    agg.forEach((r) => { if (r._id in stats) stats[r._id] = r.count })
+    inquiries.forEach((row) => {
+      if (row.status in stats) stats[row.status] += 1
+    })
     res.json({ stats })
   } catch (err) {
     res.status(500).json({ error: 'Could not load stats.', detail: err.message })
@@ -61,54 +81,59 @@ router.get('/stats', requireAuth, async (_req, res) => {
 router.get('/analytics', requireAuth, async (_req, res) => {
   try {
     const now = new Date()
-    const startOfToday = new Date(now); startOfToday.setHours(0, 0, 0, 0)
+    const startOfToday = new Date(now)
+    startOfToday.setHours(0, 0, 0, 0)
 
-    const last14Start = new Date(startOfToday); last14Start.setDate(last14Start.getDate() - 13)
-    const last7Start = new Date(startOfToday); last7Start.setDate(last7Start.getDate() - 6)
-    const prev7Start = new Date(startOfToday); prev7Start.setDate(prev7Start.getDate() - 13)
+    const last14Start = new Date(startOfToday)
+    last14Start.setDate(last14Start.getDate() - 13)
+    const last7Start = new Date(startOfToday)
+    last7Start.setDate(last7Start.getDate() - 6)
+    const prev7Start = new Date(startOfToday)
+    prev7Start.setDate(prev7Start.getDate() - 13)
 
-    const [
-      total,
-      statusAgg,
-      sourceAgg,
-      serviceAgg,
-      destAgg,
-      dayAgg,
-      last7Count,
-      prev7Count,
-      recent,
-    ] = await Promise.all([
-      Inquiry.countDocuments(),
-      Inquiry.aggregate([{ $group: { _id: '$status', count: { $sum: 1 } } }]),
-      Inquiry.aggregate([{ $group: { _id: '$source', count: { $sum: 1 } } }, { $sort: { count: -1 } }]),
-      Inquiry.aggregate([
-        { $match: { service: { $nin: ['', null] } } },
-        { $group: { _id: '$service', count: { $sum: 1 } } },
-        { $sort: { count: -1 } },
-      ]),
-      Inquiry.aggregate([
-        { $match: { destination: { $nin: ['', null] } } },
-        { $group: { _id: '$destination', count: { $sum: 1 } } },
-        { $sort: { count: -1 } },
-        { $limit: 6 },
-      ]),
-      Inquiry.aggregate([
-        { $match: { createdAt: { $gte: last14Start } } },
-        { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } }, count: { $sum: 1 } } },
-      ]),
-      Inquiry.countDocuments({ createdAt: { $gte: last7Start } }),
-      Inquiry.countDocuments({ createdAt: { $gte: prev7Start, $lt: last7Start } }),
-      Inquiry.find().sort({ createdAt: -1 }).limit(6),
-    ])
+    const inquiries = await Inquiry.find()
+    const total = inquiries.length
+
+    const statusAgg = countBy(inquiries, 'status')
+    const sourceAgg = countBy(inquiries, 'source')
+    const serviceAgg = countBy(
+      inquiries.filter((row) => row.service),
+      'service'
+    )
+    const destAgg = countBy(
+      inquiries.filter((row) => row.destination),
+      'destination'
+    ).slice(0, 6)
+
+    const last14 = inquiries.filter((row) => {
+      const created = row.createdAt ? new Date(row.createdAt) : null
+      return created && created >= last14Start
+    })
+    const dayAgg = countBy(
+      last14.map((row) => ({ day: dayKey(row.createdAt) })).filter((row) => row.day),
+      'day'
+    )
+
+    const last7Count = inquiries.filter((row) => {
+      const created = row.createdAt ? new Date(row.createdAt) : null
+      return created && created >= last7Start
+    }).length
+    const prev7Count = inquiries.filter((row) => {
+      const created = row.createdAt ? new Date(row.createdAt) : null
+      return created && created >= prev7Start && created < last7Start
+    }).length
+    const recent = inquiries.slice(0, 6)
 
     const byStatus = Object.fromEntries(STATUSES.map((s) => [s, 0]))
-    statusAgg.forEach((r) => { if (r._id in byStatus) byStatus[r._id] = r.count })
+    statusAgg.forEach((r) => {
+      if (r._id in byStatus) byStatus[r._id] = r.count
+    })
 
-    // Build a continuous 14-day series (fill gaps with 0)
     const dayMap = Object.fromEntries(dayAgg.map((d) => [d._id, d.count]))
     const series = []
     for (let i = 0; i < 14; i++) {
-      const d = new Date(last14Start); d.setDate(d.getDate() + i)
+      const d = new Date(last14Start)
+      d.setDate(d.getDate() + i)
       const key = d.toISOString().slice(0, 10)
       series.push({ date: key, count: dayMap[key] || 0 })
     }
@@ -148,7 +173,7 @@ router.patch('/:id', requireAuth, async (req, res) => {
     }
     if (typeof req.body.notes === 'string') updates.notes = req.body.notes
 
-    const inquiry = await Inquiry.findByIdAndUpdate(req.params.id, updates, { new: true })
+    const inquiry = await Inquiry.findByIdAndUpdate(req.params.id, updates)
     if (!inquiry) return res.status(404).json({ error: 'Inquiry not found.' })
     res.json({ ok: true, inquiry })
   } catch (err) {

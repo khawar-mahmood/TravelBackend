@@ -15,11 +15,11 @@ async function start() {
     const mode = await connectDB()
     console.log(
       mode === 'memory'
-        ? '✅ In-memory MongoDB started (dev — data resets on restart)'
-        : '✅ MongoDB connected (configured URI)'
+        ? '✅ In-memory store started (dev — data resets on restart)'
+        : '✅ Firestore connected'
     )
 
-    // Auto-seed sample data only for the in-memory dev database.
+    // Auto-seed sample data only for the in-memory dev store.
     if (mode === 'memory') {
       const count = await Inquiry.countDocuments()
       if (count === 0) {

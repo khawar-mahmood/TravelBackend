@@ -1,9 +1,8 @@
 import 'dotenv/config'
 import express from 'express'
 import cors from 'cors'
-import mongoose from 'mongoose'
 
-import { connectDB } from './db.js'
+import { connectDB, getMode } from './db.js'
 import authRoutes from './routes/auth.js'
 import inquiryRoutes from './routes/inquiries.js'
 
@@ -80,15 +79,16 @@ app.get('/', (_req, res) => {
 })
 
 app.get('/api/health', (_req, res) => {
+  const mode = getMode()
   res.json({
     ok: true,
-    db: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
+    db: mode === 'firestore' ? 'connected' : mode === 'memory' ? 'memory' : 'disconnected',
     time: new Date().toISOString(),
     cors: origins,
   })
 })
 
-app.use('/api/auth', ensureDB, authRoutes)
+app.use('/api/auth', authRoutes)
 app.use('/api/inquiries', ensureDB, inquiryRoutes)
 
 // CORS error handler
