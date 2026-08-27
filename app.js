@@ -10,6 +10,8 @@ import expenseRoutes from './routes/expenses.js'
 import financeRoutes from './routes/finance.js'
 import invoiceRoutes from './routes/invoices.js'
 import trafficRoutes from './routes/traffic.js'
+import blogRoutes from './routes/blogs.js'
+import chatRoutes from './routes/chat.js'
 
 const app = express()
 
@@ -85,6 +87,8 @@ app.get('/', (_req, res) => {
       finance: '/api/finance/summary',
       invoices: '/api/invoices',
       traffic: '/api/traffic/analytics',
+      blogs: '/api/blogs',
+      chat: 'POST /api/chat',
     },
   })
 })
@@ -106,6 +110,8 @@ app.use('/api/expenses', ensureDB, expenseRoutes)
 app.use('/api/finance', ensureDB, financeRoutes)
 app.use('/api/invoices', ensureDB, invoiceRoutes)
 app.use('/api/traffic', ensureDB, trafficRoutes)
+app.use('/api/blogs', ensureDB, blogRoutes)
+app.use('/api/chat', chatRoutes)
 
 // CORS error handler
 app.use((err, req, res, next) => {
