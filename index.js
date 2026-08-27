@@ -2,7 +2,8 @@ import 'dotenv/config'
 import app, { origins } from './app.js'
 import { connectDB } from './db.js'
 import Inquiry from './models/Inquiry.js'
-import { SAMPLE_INQUIRIES } from './sampleData.js'
+import TrafficHit from './models/TrafficHit.js'
+import { SAMPLE_INQUIRIES, buildSampleTrafficHits } from './sampleData.js'
 
 const PORT = process.env.PORT || 5000
 
@@ -25,6 +26,12 @@ async function start() {
       if (count === 0) {
         await Inquiry.insertMany(SAMPLE_INQUIRIES)
         console.log(`🌱 Seeded ${SAMPLE_INQUIRIES.length} sample inquiries (in-memory).`)
+      }
+      const existingHits = await TrafficHit.findSince(new Date(Date.now() - 1000 * 60 * 60 * 24 * 40))
+      if (existingHits.length === 0) {
+        const trafficHits = buildSampleTrafficHits()
+        await TrafficHit.insertMany(trafficHits)
+        console.log(`🌱 Seeded ${trafficHits.length} sample traffic hits (in-memory).`)
       }
     }
   } catch (err) {

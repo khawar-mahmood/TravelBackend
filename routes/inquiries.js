@@ -1,6 +1,8 @@
 import { Router } from 'express'
 import Inquiry, { STATUSES } from '../models/Inquiry.js'
-import { requireAuth } from '../middleware/auth.js'
+import Agent from '../models/Agent.js'
+import { requireAuth, requireAdmin } from '../middleware/auth.js'
+import { buildInquiryAnalyticsSeries } from '../lib/kpiSeries.js'
 
 const router = Router()
 
@@ -15,11 +17,33 @@ function countBy(rows, key) {
     .sort((a, b) => b.count - a.count)
 }
 
-function dayKey(value) {
+function localDayKey(value) {
   if (!value) return null
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return null
-  return date.toISOString().slice(0, 10)
+  const y = date.getFullYear()
+  const m = String(date.getMonth() + 1).padStart(2, '0')
+  const d = String(date.getDate()).padStart(2, '0')
+  return `${y}-${m}-${d}`
+}
+
+function dayKey(value) {
+  return localDayKey(value)
+}
+
+function buildFilter(query, user) {
+  const filter = {}
+  const { status, source, excludeSource } = query
+  if (status && STATUSES.includes(status)) filter.status = status
+  if (source) filter.source = String(source)
+  if (excludeSource) filter.excludeSource = String(excludeSource)
+  if (user.role === 'agent') filter.assignedAgentId = user.agentId
+  return filter
+}
+
+function canAccessInquiry(inquiry, user) {
+  if (user.role === 'admin') return true
+  return inquiry.assignedAgentId === user.agentId
 }
 
 // PUBLIC: create a new inquiry (from website forms)
@@ -49,22 +73,16 @@ router.post('/', async (req, res) => {
   }
 })
 
-// ---- Everything below requires admin auth ----
-
-// LIST (optionally filter by ?status=)
 router.get('/', requireAuth, async (req, res) => {
   try {
-    const { status } = req.query
-    const filter = status && STATUSES.includes(status) ? { status } : {}
-    const inquiries = await Inquiry.find(filter)
+    const inquiries = await Inquiry.find(buildFilter(req.query, req.user))
     res.json({ inquiries })
   } catch (err) {
     res.status(500).json({ error: 'Could not load inquiries.', detail: err.message })
   }
 })
 
-// COUNTS per status (for dashboard badges)
-router.get('/stats', requireAuth, async (_req, res) => {
+router.get('/stats', requireAuth, requireAdmin, async (_req, res) => {
   try {
     const inquiries = await Inquiry.find()
     const stats = Object.fromEntries(STATUSES.map((s) => [s, 0]))
@@ -77,8 +95,7 @@ router.get('/stats', requireAuth, async (_req, res) => {
   }
 })
 
-// FULL ANALYTICS for the dashboard (KPIs, trends, breakdowns)
-router.get('/analytics', requireAuth, async (_req, res) => {
+router.get('/analytics', requireAuth, requireAdmin, async (_req, res) => {
   try {
     const now = new Date()
     const startOfToday = new Date(now)
@@ -130,13 +147,8 @@ router.get('/analytics', requireAuth, async (_req, res) => {
     })
 
     const dayMap = Object.fromEntries(dayAgg.map((d) => [d._id, d.count]))
-    const series = []
-    for (let i = 0; i < 14; i++) {
-      const d = new Date(last14Start)
-      d.setDate(d.getDate() + i)
-      const key = d.toISOString().slice(0, 10)
-      series.push({ date: key, count: dayMap[key] || 0 })
-    }
+    const kpiSeries = buildInquiryAnalyticsSeries(inquiries, 14)
+    const series = kpiSeries.series
 
     const conversionRate = total ? Math.round((byStatus.complete / total) * 100) : 0
     const trendPct = prev7Count
@@ -150,6 +162,7 @@ router.get('/analytics', requireAuth, async (_req, res) => {
       byService: serviceAgg.map((r) => ({ label: r._id, count: r.count })),
       topDestinations: destAgg.map((r) => ({ label: r._id, count: r.count })),
       series,
+      seriesByStatus: kpiSeries.byStatus,
       last7Count,
       prev7Count,
       trendPct,
@@ -161,10 +174,17 @@ router.get('/analytics', requireAuth, async (_req, res) => {
   }
 })
 
-// UPDATE status / notes
 router.patch('/:id', requireAuth, async (req, res) => {
   try {
+    const existing = await Inquiry.findById(req.params.id)
+    if (!existing) return res.status(404).json({ error: 'Inquiry not found.' })
+    if (!canAccessInquiry(existing, req.user)) {
+      return res.status(403).json({ error: 'You cannot update this inquiry.' })
+    }
+
     const updates = {}
+    const isAdmin = req.user.role === 'admin'
+
     if (req.body.status) {
       if (!STATUSES.includes(req.body.status)) {
         return res.status(400).json({ error: 'Invalid status.' })
@@ -172,17 +192,38 @@ router.patch('/:id', requireAuth, async (req, res) => {
       updates.status = req.body.status
     }
     if (typeof req.body.notes === 'string') updates.notes = req.body.notes
+    if (req.body.initialPayment !== undefined) updates.initialPayment = req.body.initialPayment
+    if (req.body.totalPayment !== undefined) updates.totalPayment = req.body.totalPayment
+    if (req.body.refundAmount !== undefined) updates.refundAmount = req.body.refundAmount
+    if (req.body.paymentMethod !== undefined) updates.paymentMethod = req.body.paymentMethod
+    if (req.body.paymentStatus !== undefined) updates.paymentStatus = req.body.paymentStatus
+    if (typeof req.body.paymentReference === 'string') updates.paymentReference = req.body.paymentReference
+    if (req.body.vatAmount !== undefined) updates.vatAmount = req.body.vatAmount
+    if (typeof req.body.hasInsurance === 'boolean') updates.hasInsurance = req.body.hasInsurance
+    if (typeof req.body.hasFlight === 'boolean') updates.hasFlight = req.body.hasFlight
+    if (typeof req.body.signed === 'boolean') updates.signed = req.body.signed
+
+    if (isAdmin && req.body.assignedAgentId !== undefined) {
+      const agentId = String(req.body.assignedAgentId || '').trim()
+      if (!agentId) {
+        updates.assignedAgentId = ''
+        updates.assignedAgentName = ''
+      } else {
+        const agent = await Agent.findById(agentId)
+        if (!agent) return res.status(400).json({ error: 'Agent not found.' })
+        updates.assignedAgentId = agent._id
+        updates.assignedAgentName = agent.name
+      }
+    }
 
     const inquiry = await Inquiry.findByIdAndUpdate(req.params.id, updates)
-    if (!inquiry) return res.status(404).json({ error: 'Inquiry not found.' })
     res.json({ ok: true, inquiry })
   } catch (err) {
     res.status(500).json({ error: 'Could not update inquiry.', detail: err.message })
   }
 })
 
-// DELETE
-router.delete('/:id', requireAuth, async (req, res) => {
+router.delete('/:id', requireAuth, requireAdmin, async (req, res) => {
   try {
     const inquiry = await Inquiry.findByIdAndDelete(req.params.id)
     if (!inquiry) return res.status(404).json({ error: 'Inquiry not found.' })

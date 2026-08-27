@@ -61,7 +61,11 @@ export async function connectDB() {
         )
       }
 
-      cached.memory = new Map()
+      cached.memory = {
+        inquiries: new Map(),
+        agents: new Map(),
+        expenses: new Map(),
+      }
       cached.mode = 'memory'
       return cached.mode
     })().catch((err) => {
@@ -79,9 +83,14 @@ export function getDb() {
   return cached.db
 }
 
-export function getMemory() {
+export function getMemoryStore(name) {
   if (!cached.memory) throw new Error('In-memory store is not available.')
-  return cached.memory
+  if (!cached.memory[name]) cached.memory[name] = new Map()
+  return cached.memory[name]
+}
+
+export function getMemory() {
+  return getMemoryStore('inquiries')
 }
 
 export function getMode() {

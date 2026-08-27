@@ -2,11 +2,20 @@ import { randomUUID } from 'node:crypto'
 import { getDb, getMemory, getMode } from '../db.js'
 
 export const STATUSES = ['new', 'in_process', 'complete', 'failed']
+export const META_INQUIRY_SOURCE = 'meta-inquiry'
 
 const COLLECTION = 'inquiries'
 
 function trim(value) {
   return typeof value === 'string' ? value.trim() : ''
+}
+
+export const PAYMENT_METHODS = ['bank', 'card', 'cash', 'other']
+export const PAYMENT_STATUSES = ['unpaid', 'deposit_paid', 'partial', 'paid', 'refunded']
+
+function toNumber(value) {
+  const num = Number(value)
+  return Number.isFinite(num) && num >= 0 ? num : 0
 }
 
 function toIso(value) {
@@ -38,6 +47,18 @@ function sanitize(input = {}) {
     source: trim(input.source) || 'website',
     status,
     notes: trim(input.notes),
+    assignedAgentId: trim(input.assignedAgentId) || '',
+    assignedAgentName: trim(input.assignedAgentName) || '',
+    initialPayment: toNumber(input.initialPayment),
+    totalPayment: toNumber(input.totalPayment),
+    refundAmount: toNumber(input.refundAmount),
+    paymentMethod: PAYMENT_METHODS.includes(input.paymentMethod) ? input.paymentMethod : '',
+    paymentStatus: PAYMENT_STATUSES.includes(input.paymentStatus) ? input.paymentStatus : 'unpaid',
+    paymentReference: trim(input.paymentReference),
+    vatAmount: toNumber(input.vatAmount),
+    hasInsurance: Boolean(input.hasInsurance),
+    hasFlight: Boolean(input.hasFlight),
+    signed: Boolean(input.signed),
   }
 }
 
@@ -54,6 +75,18 @@ function toClient(id, data) {
     source: data.source || 'website',
     status: data.status || 'new',
     notes: data.notes || '',
+    assignedAgentId: data.assignedAgentId || '',
+    assignedAgentName: data.assignedAgentName || '',
+    initialPayment: toNumber(data.initialPayment),
+    totalPayment: toNumber(data.totalPayment),
+    refundAmount: toNumber(data.refundAmount),
+    paymentMethod: data.paymentMethod || '',
+    paymentStatus: data.paymentStatus || 'unpaid',
+    paymentReference: data.paymentReference || '',
+    vatAmount: toNumber(data.vatAmount),
+    hasInsurance: data.hasInsurance === true,
+    hasFlight: data.hasFlight === true,
+    signed: data.signed === true,
     createdAt: toIso(data.createdAt),
     updatedAt: toIso(data.updatedAt),
   }
@@ -65,6 +98,15 @@ function collection() {
 
 function sortNewest(a, b) {
   return new Date(b.createdAt || 0) - new Date(a.createdAt || 0)
+}
+
+function applyFilters(rows, filter = {}) {
+  let result = rows
+  if (filter.status) result = result.filter((row) => row.status === filter.status)
+  if (filter.source) result = result.filter((row) => row.source === filter.source)
+  if (filter.excludeSource) result = result.filter((row) => row.source !== filter.excludeSource)
+  if (filter.assignedAgentId) result = result.filter((row) => row.assignedAgentId === filter.assignedAgentId)
+  return result
 }
 
 export async function create(input) {
@@ -82,18 +124,21 @@ export async function create(input) {
 }
 
 export async function find(filter = {}) {
+  let rows
+
   if (getMode() === 'memory') {
-    const rows = [...getMemory().values()].map((row) => toClient(row.id, row))
-    const filtered = filter.status ? rows.filter((row) => row.status === filter.status) : rows
-    return filtered.sort(sortNewest)
+    rows = [...getMemory().values()].map((row) => toClient(row.id, row))
+  } else if (filter.assignedAgentId) {
+    const snap = await collection().where('assignedAgentId', '==', filter.assignedAgentId).get()
+    rows = snap.docs.map((doc) => toClient(doc.id, doc.data()))
+  } else {
+    const snap = filter.status && !filter.source && !filter.excludeSource
+      ? await collection().where('status', '==', filter.status).get()
+      : await collection().orderBy('createdAt', 'desc').get()
+    rows = snap.docs.map((doc) => toClient(doc.id, doc.data()))
   }
 
-  const snap = filter.status
-    ? await collection().where('status', '==', filter.status).get()
-    : await collection().orderBy('createdAt', 'desc').get()
-
-  const rows = snap.docs.map((doc) => toClient(doc.id, doc.data()))
-  return filter.status ? rows.sort(sortNewest) : rows
+  return applyFilters(rows, filter).sort(sortNewest)
 }
 
 export async function findById(id) {
@@ -110,6 +155,22 @@ export async function findByIdAndUpdate(id, updates) {
   const next = {}
   if (updates.status) next.status = updates.status
   if (typeof updates.notes === 'string') next.notes = trim(updates.notes)
+  if (typeof updates.assignedAgentId === 'string') next.assignedAgentId = trim(updates.assignedAgentId)
+  if (typeof updates.assignedAgentName === 'string') next.assignedAgentName = trim(updates.assignedAgentName)
+  if (updates.initialPayment !== undefined) next.initialPayment = toNumber(updates.initialPayment)
+  if (updates.totalPayment !== undefined) next.totalPayment = toNumber(updates.totalPayment)
+  if (updates.refundAmount !== undefined) next.refundAmount = toNumber(updates.refundAmount)
+  if (updates.paymentMethod !== undefined) {
+    next.paymentMethod = PAYMENT_METHODS.includes(updates.paymentMethod) ? updates.paymentMethod : ''
+  }
+  if (updates.paymentStatus !== undefined) {
+    next.paymentStatus = PAYMENT_STATUSES.includes(updates.paymentStatus) ? updates.paymentStatus : 'unpaid'
+  }
+  if (typeof updates.paymentReference === 'string') next.paymentReference = trim(updates.paymentReference)
+  if (updates.vatAmount !== undefined) next.vatAmount = toNumber(updates.vatAmount)
+  if (typeof updates.hasInsurance === 'boolean') next.hasInsurance = updates.hasInsurance
+  if (typeof updates.hasFlight === 'boolean') next.hasFlight = updates.hasFlight
+  if (typeof updates.signed === 'boolean') next.signed = updates.signed
   if (!Object.keys(next).length) return findById(id)
 
   next.updatedAt = new Date()

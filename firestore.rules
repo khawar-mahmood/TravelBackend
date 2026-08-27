@@ -8,3 +8,10 @@ service cloud.firestore {
     }
   }
 }
+
+
+
+
+git add .env.example .gitignore README.md app.js db.js index.js models/Inquiry.js package-lock.json package.json routes/inquiries.js seed.js firestore.rules
+git commit -m "Migrate backend from MongoDB to Firestore"
+git push origin main

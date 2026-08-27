@@ -5,6 +5,11 @@ import cors from 'cors'
 import { connectDB, getMode } from './db.js'
 import authRoutes from './routes/auth.js'
 import inquiryRoutes from './routes/inquiries.js'
+import agentRoutes from './routes/agents.js'
+import expenseRoutes from './routes/expenses.js'
+import financeRoutes from './routes/finance.js'
+import invoiceRoutes from './routes/invoices.js'
+import trafficRoutes from './routes/traffic.js'
 
 const app = express()
 
@@ -51,7 +56,7 @@ app.use((req, res, next) => {
   next()
 })
 
-app.use(express.json())
+app.use(express.json({ limit: '8mb' }))
 
 // Applied only to the data routes, so `/` and `/api/health` still answer when
 // the database is unreachable — which is what tells you the database is the
@@ -73,7 +78,13 @@ app.get('/', (_req, res) => {
     endpoints: {
       health: '/api/health',
       login: 'POST /api/auth/login',
+      agentLogin: 'POST /api/auth/agent/login',
       inquiries: '/api/inquiries',
+      agents: '/api/agents',
+      expenses: '/api/expenses',
+      finance: '/api/finance/summary',
+      invoices: '/api/invoices',
+      traffic: '/api/traffic/analytics',
     },
   })
 })
@@ -90,6 +101,11 @@ app.get('/api/health', (_req, res) => {
 
 app.use('/api/auth', authRoutes)
 app.use('/api/inquiries', ensureDB, inquiryRoutes)
+app.use('/api/agents', ensureDB, agentRoutes)
+app.use('/api/expenses', ensureDB, expenseRoutes)
+app.use('/api/finance', ensureDB, financeRoutes)
+app.use('/api/invoices', ensureDB, invoiceRoutes)
+app.use('/api/traffic', ensureDB, trafficRoutes)
 
 // CORS error handler
 app.use((err, req, res, next) => {
