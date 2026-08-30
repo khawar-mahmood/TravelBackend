@@ -3,6 +3,7 @@ import Inquiry, { STATUSES } from '../models/Inquiry.js'
 import Agent from '../models/Agent.js'
 import { requireAuth, requireAdmin } from '../middleware/auth.js'
 import { buildInquiryAnalyticsSeries } from '../lib/kpiSeries.js'
+import { notifyNewInquiry } from '../lib/notifyAdmins.js'
 
 const router = Router()
 
@@ -66,6 +67,12 @@ router.post('/', async (req, res) => {
       source: source || 'website',
       status: 'new',
     })
+
+    try {
+      await notifyNewInquiry(inquiry)
+    } catch (notifyErr) {
+      console.error('Inquiry push failed:', notifyErr.message)
+    }
 
     res.status(201).json({ ok: true, inquiry })
   } catch (err) {

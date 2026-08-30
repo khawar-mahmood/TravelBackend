@@ -12,6 +12,7 @@ import invoiceRoutes from './routes/invoices.js'
 import trafficRoutes from './routes/traffic.js'
 import blogRoutes from './routes/blogs.js'
 import chatRoutes from './routes/chat.js'
+import deviceRoutes from './routes/devices.js'
 
 const app = express()
 
@@ -89,6 +90,7 @@ app.get('/', (_req, res) => {
       traffic: '/api/traffic/analytics',
       blogs: '/api/blogs',
       chat: 'POST /api/chat',
+      devices: 'POST /api/devices',
     },
   })
 })
@@ -112,6 +114,7 @@ app.use('/api/invoices', ensureDB, invoiceRoutes)
 app.use('/api/traffic', ensureDB, trafficRoutes)
 app.use('/api/blogs', ensureDB, blogRoutes)
 app.use('/api/chat', chatRoutes)
+app.use('/api/devices', ensureDB, deviceRoutes)
 
 // CORS error handler
 app.use((err, req, res, next) => {
